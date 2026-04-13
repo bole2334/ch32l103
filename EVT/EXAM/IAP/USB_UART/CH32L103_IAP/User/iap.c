@@ -25,6 +25,298 @@ u32 CodeLen = 0;
 u8 End_Flag = 0;
 u8 EP2_Rx_Buffer[USBD_DATA_SIZE+4];
 #define  isp_cmd_t   ((isp_cmd  *)EP2_Rx_Buffer)
+CanFDRxMsg CanFDRxStructure = {0};
+u8 CanFD_IAP_StreamBuf[80];
+u8 CanFD_IAP_StreamLen = 0;
+u8 CanFD_IAP_StreamState = 0;
+
+static u8 CANFD_IAP_DlcEncode(u8 len)
+{
+    if(len <= 8) return len;
+    else if(len <= 12) return CANFD_DLC_BYTES_12;
+    else if(len <= 16) return CANFD_DLC_BYTES_16;
+    else if(len <= 20) return CANFD_DLC_BYTES_20;
+    else if(len <= 24) return CANFD_DLC_BYTES_24;
+    else if(len <= 32) return CANFD_DLC_BYTES_32;
+    else if(len <= 48) return CANFD_DLC_BYTES_48;
+    else return CANFD_DLC_BYTES_64;
+}
+
+static void CANFD_IAP_StreamReset(void)
+{
+    CanFD_IAP_StreamLen = 0;
+    CanFD_IAP_StreamState = 0;
+}
+
+static u8 CANFD_IAP_Send_Msg(u8 *msg, u8 len)
+{
+    u8 mbox;
+    u16 i = 0;
+    CanFDTxMsg CanFDTxStructure = {0};
+
+    CanFDTxStructure.StdId = CANFD_IAP_TX_STDID;
+    CanFDTxStructure.IDE = CAN_Id_Standard;
+    CanFDTxStructure.RTR = CAN_RTR_Data;
+    CanFDTxStructure.DLC = CANFD_IAP_DlcEncode(len);
+
+    for(i = 0; i < len; i++) {
+        CanFDTxStructure.Data[i] = msg[i];
+    }
+
+    mbox = CANFD_Transmit(CAN1, &CanFDTxStructure);
+
+    while((CAN_TransmitStatus(CAN1, mbox) != CAN_TxStatus_Ok) && (i < 0xFFF))
+    {
+        i++;
+    }
+
+    if(i == 0xFFF)
+    {
+        return 1;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+static void CANFD_IAP_SendAck(u8 s)
+{
+    u8 ack_buf[6];
+
+    ack_buf[0] = Uart_Sync_Head1;
+    ack_buf[1] = Uart_Sync_Head2;
+    ack_buf[2] = 0x00;
+    ack_buf[3] = (s == ERR_ERROR) ? 0x01 : 0x00;
+    ack_buf[4] = Uart_Sync_Head2;
+    ack_buf[5] = Uart_Sync_Head1;
+    CANFD_IAP_Send_Msg(ack_buf, 6);
+}
+
+static u8 CANFD_IAP_PacketExpectedLen(u8 cmd, u8 data_len)
+{
+    u8 expected = 8;
+
+    if((cmd == CMD_IAP_ERASE) || (cmd == CMD_IAP_VERIFY))
+    {
+        expected += 4;
+    }
+
+    if((cmd == CMD_IAP_PROM) || (cmd == CMD_IAP_VERIFY))
+    {
+        expected += data_len;
+    }
+
+    return expected;
+}
+
+static u8 CANFD_IAP_PacketDeal(u8 *pkt, u8 pkt_len)
+{
+    u8 i, cmd, data_len, expected_len;
+    u16 data_add = 0;
+
+    if(pkt_len < 8)
+    {
+        return ERR_ERROR;
+    }
+
+    if((pkt[0] != Uart_Sync_Head1) || (pkt[1] != Uart_Sync_Head2))
+    {
+        return ERR_ERROR;
+    }
+
+    if((pkt[pkt_len - 2] != Uart_Sync_Head2) || (pkt[pkt_len - 1] != Uart_Sync_Head1))
+    {
+        return ERR_ERROR;
+    }
+
+    cmd = pkt[2];
+    data_len = pkt[3];
+    expected_len = CANFD_IAP_PacketExpectedLen(cmd, data_len);
+    if((expected_len != pkt_len) || (data_len > 64))
+    {
+        return ERR_ERROR;
+    }
+
+    isp_cmd_t->UART.Cmd = cmd;
+    isp_cmd_t->UART.Len = data_len;
+    data_add += cmd;
+    data_add += data_len;
+
+    if((cmd == CMD_IAP_ERASE) || (cmd == CMD_IAP_VERIFY))
+    {
+        for(i = 0; i < 4; i++)
+        {
+            isp_cmd_t->other.buf[2 + i] = pkt[4 + i];
+            data_add += pkt[4 + i];
+        }
+    }
+
+    if((cmd == CMD_IAP_PROM) || (cmd == CMD_IAP_VERIFY))
+    {
+        u8 data_offset = ((cmd == CMD_IAP_VERIFY) ? 8 : 4);
+        for(i = 0; i < data_len; i++)
+        {
+            isp_cmd_t->UART.data[i] = pkt[data_offset + i];
+            data_add += pkt[data_offset + i];
+        }
+    }
+
+    if(pkt[pkt_len - 4] != (u8)(data_add & 0xFF))
+    {
+        return ERR_ERROR;
+    }
+
+    if(pkt[pkt_len - 3] != (u8)(data_add >> 8))
+    {
+        return ERR_ERROR;
+    }
+
+    return UART_RecData_Deal();
+}
+
+void CANFD_IAP_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitSturcture = {0};
+    CAN_InitTypeDef CAN_InitSturcture = {0};
+    CANFD_InitTypeDef CANFD_InitSturcture = {0};
+    CAN_FilterInitTypeDef CAN_FilterInitSturcture = {0};
+
+    RCC_PB2PeriphClockCmd(RCC_PB2Periph_GPIOA, ENABLE);
+    RCC_PB1PeriphClockCmd(RCC_PB1Periph_CAN1, ENABLE);
+
+    GPIO_InitSturcture.GPIO_Pin = GPIO_Pin_12;
+    GPIO_InitSturcture.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_InitSturcture.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA, &GPIO_InitSturcture);
+
+    GPIO_InitSturcture.GPIO_Pin = GPIO_Pin_11;
+    GPIO_InitSturcture.GPIO_Mode = GPIO_Mode_IPU;
+    GPIO_Init(GPIOA, &GPIO_InitSturcture);
+
+    CAN_InitSturcture.CAN_Mode = CAN_Mode_Normal;
+    CAN_InitSturcture.CAN_SJW = CAN_SJW_4tq;
+    CAN_InitSturcture.CAN_BS1 = CAN_BS1_15tq;
+    CAN_InitSturcture.CAN_BS2 = CAN_BS2_8tq;
+    CAN_InitSturcture.CAN_Prescaler = 2;
+    CAN_Init(CAN1, &CAN_InitSturcture);
+
+    CANFD_InitSturcture.CANFD_TTCM = DISABLE;
+    CANFD_InitSturcture.CANFD_ABOM = DISABLE;
+    CANFD_InitSturcture.CANFD_AWUM = DISABLE;
+    CANFD_InitSturcture.CANFD_NART = ENABLE;
+    CANFD_InitSturcture.CANFD_RFLM = DISABLE;
+    CANFD_InitSturcture.CANFD_TXFP = DISABLE;
+    CANFD_InitSturcture.CANFD_Mode = CAN_Mode_Normal;
+    CANFD_InitSturcture.CANFD_SJW = CANFD_SJW_4tq;
+    CANFD_InitSturcture.CANFD_BS1 = CANFD_BS1_6tq;
+    CANFD_InitSturcture.CANFD_BS2 = CANFD_BS2_5tq;
+    CANFD_InitSturcture.CANFD_Prescaler = 2;
+    CANFD_InitSturcture.CANFD_BRS_TXM0 = ENABLE;
+    CANFD_InitSturcture.CANFD_BRS_TXM1 = ENABLE;
+    CANFD_InitSturcture.CANFD_BRS_TXM2 = ENABLE;
+    CANFD_Init(CAN1, &CANFD_InitSturcture);
+
+    CAN_FilterInitSturcture.CAN_FilterNumber = 0;
+    CAN_FilterInitSturcture.CAN_FilterMode = CAN_FilterMode_IdMask;
+    CAN_FilterInitSturcture.CAN_FilterScale = CAN_FilterScale_32bit;
+    CAN_FilterInitSturcture.CAN_FilterIdHigh = (CANFD_IAP_RX_STDID << 5);
+    CAN_FilterInitSturcture.CAN_FilterIdLow = 0;
+    CAN_FilterInitSturcture.CAN_FilterMaskIdHigh = 0xFFFF;
+    CAN_FilterInitSturcture.CAN_FilterMaskIdLow = 0;
+    CAN_FilterInitSturcture.CAN_FilterFIFOAssignment = CAN_Filter_FIFO0;
+    CAN_FilterInitSturcture.CAN_FilterActivation = ENABLE;
+    CAN_FilterInit(&CAN_FilterInitSturcture);
+
+    CANFD_ReceiveFIFO_DMAAdr(CAN1, CAN_FIFO0, (u32)&CanFDRxStructure.Data[0]);
+    CANFD_IAP_StreamReset();
+}
+
+void CANFD_Rx_Deal(void)
+{
+    u8 i, s;
+
+    if(CAN_MessagePending(CAN1, CAN_FIFO0) == 0)
+    {
+        return;
+    }
+
+    if(CANFD_Receive(CAN1, CAN_FIFO0, &CanFDRxStructure) != READY)
+    {
+        return;
+    }
+
+    if((CanFDRxStructure.IDE != CAN_Id_Standard) || (CanFDRxStructure.StdId != CANFD_IAP_RX_STDID))
+    {
+        return;
+    }
+
+    for(i = 0; i < CanFDRxStructure.DLC; i++)
+    {
+        u8 rx = CanFDRxStructure.Data[i];
+        if(CanFD_IAP_StreamState == 0)
+        {
+            if(rx == Uart_Sync_Head1)
+            {
+                CanFD_IAP_StreamBuf[0] = rx;
+                CanFD_IAP_StreamLen = 1;
+                CanFD_IAP_StreamState = 1;
+            }
+        }
+        else if(CanFD_IAP_StreamState == 1)
+        {
+            if(rx == Uart_Sync_Head2)
+            {
+                CanFD_IAP_StreamBuf[1] = rx;
+                CanFD_IAP_StreamLen = 2;
+                CanFD_IAP_StreamState = 2;
+            }
+            else if(rx == Uart_Sync_Head1)
+            {
+                CanFD_IAP_StreamBuf[0] = rx;
+                CanFD_IAP_StreamLen = 1;
+            }
+            else
+            {
+                CANFD_IAP_StreamReset();
+            }
+        }
+        else
+        {
+            if(CanFD_IAP_StreamLen >= sizeof(CanFD_IAP_StreamBuf))
+            {
+                CANFD_IAP_StreamReset();
+                continue;
+            }
+
+            CanFD_IAP_StreamBuf[CanFD_IAP_StreamLen++] = rx;
+
+            if(CanFD_IAP_StreamLen >= 4)
+            {
+                u8 expected = CANFD_IAP_PacketExpectedLen(CanFD_IAP_StreamBuf[2], CanFD_IAP_StreamBuf[3]);
+                if(expected > sizeof(CanFD_IAP_StreamBuf))
+                {
+                    CANFD_IAP_StreamReset();
+                    continue;
+                }
+
+                if(CanFD_IAP_StreamLen == expected)
+                {
+                    s = CANFD_IAP_PacketDeal(CanFD_IAP_StreamBuf, CanFD_IAP_StreamLen);
+                    if(s != ERR_End)
+                    {
+                        CANFD_IAP_SendAck(s);
+                    }
+                    CANFD_IAP_StreamReset();
+                }
+                else if(CanFD_IAP_StreamLen > expected)
+                {
+                    CANFD_IAP_StreamReset();
+                }
+            }
+        }
+    }
+}
 
 /*********************************************************************
  * @fn      CH32_IAP_Program
@@ -453,5 +745,4 @@ void SW_Handler(void) {
 
     while(1);
 }
-
 

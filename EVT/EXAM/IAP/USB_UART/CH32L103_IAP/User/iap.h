@@ -21,6 +21,8 @@
 
 #define Uart_Sync_Head1   0xaa
 #define Uart_Sync_Head2   0x55
+#define CANFD_IAP_RX_STDID 0x317
+#define CANFD_IAP_TX_STDID 0x318
 
 #define CMD_IAP_PROM      0x80
 #define CMD_IAP_ERASE     0x81
@@ -79,10 +81,11 @@ void GPIO_Cfg_init(void);
 void GPIO_Cfg_Float(void);
 u8 PA0_Check(void);
 void USART2_CFG(u32 baudrate);
+void CANFD_IAP_Init(void);
+void CANFD_Rx_Deal(void);
 
 void UART_Rx_Deal(void);
 u8 UART_RecData_Deal(void);
 
 #endif
-
 

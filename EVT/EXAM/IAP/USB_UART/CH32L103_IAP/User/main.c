@@ -85,11 +85,13 @@ int main(void)
     USBFS_RCC_Init( );
     USBFS_Device_Init( ENABLE );
     USART2_CFG(460800);
+    CANFD_IAP_Init();
     while(1)
     {
         if( USART_GetFlagStatus(USART2, USART_FLAG_RXNE) != RESET) {
             UART_Rx_Deal();
         }
+        CANFD_Rx_Deal();
 #if UPGRADE_MODE == UPGRADE_MODE_COMMAND
         if (End_Flag)
         {
@@ -100,5 +102,4 @@ int main(void)
 #endif
     }
 }
-
 
