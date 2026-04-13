@@ -105,10 +105,12 @@ int main(void)
     USBFS_Device_Init( ENABLE );
     USART2_CFG(460800);
     USART2_IT_CFG();
+    CANFD_IAP_Init();
     while(1)
     {
         Delay_Ms(250);
         GPIO_WriteBit(GPIOA, GPIO_Pin_1, (i == 0) ? (i = Bit_SET) : (i = Bit_RESET));
+        CANFD_Rx_Deal();
         if(*(uint32_t*)CalAddr == CheckNum)
         {
              Delay_Ms(10);
