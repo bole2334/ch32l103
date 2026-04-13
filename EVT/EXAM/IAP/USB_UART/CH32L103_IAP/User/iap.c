@@ -51,7 +51,7 @@ static void CANFD_IAP_StreamReset(void)
 static u8 CANFD_IAP_Send_Msg(u8 *msg, u8 len)
 {
     u8 mbox;
-    u16 i = 0;
+    u16 i = 0, timeout = 0;
     CanFDTxMsg CanFDTxStructure = {0};
 
     CanFDTxStructure.StdId = CANFD_IAP_TX_STDID;
@@ -65,12 +65,12 @@ static u8 CANFD_IAP_Send_Msg(u8 *msg, u8 len)
 
     mbox = CANFD_Transmit(CAN1, &CanFDTxStructure);
 
-    while((CAN_TransmitStatus(CAN1, mbox) != CAN_TxStatus_Ok) && (i < 0xFFF))
+    while((CAN_TransmitStatus(CAN1, mbox) != CAN_TxStatus_Ok) && (timeout < 0xFFF))
     {
-        i++;
+        timeout++;
     }
 
-    if(i == 0xFFF)
+    if(timeout == 0xFFF)
     {
         return 1;
     }
@@ -745,4 +745,3 @@ void SW_Handler(void) {
 
     while(1);
 }
-
