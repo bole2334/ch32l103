@@ -59,6 +59,7 @@
 
 #define CANSOFTFILTER_MAX_GROUP_NUM 2           // The maximum recommended configuration is 14. 
                                                 //Configure only what you need to prevent excessive RAM usage or an increase in the software's filtering time.
+#define CANFD_MAX_DATA_LEN 64
 
 #define CANSOFTFILER_PREDEF_CTRLBYTE_MASK32 ((CAN_FilterScale_32bit << 5) | (CAN_FilterMode_IdMask << 1))
 #define CANSOFTFILER_PREDEF_CTRLBYTE_ID32   ((CAN_FilterScale_32bit << 5) | (CAN_FilterMode_IdList << 1))
@@ -115,7 +116,7 @@ u8 txbuf[64];
 u8 rxbuf[64];
 CanFDRxMsg CanFDRxStructure={0};
 uint8_t interrupt_rx_flag = 0;
-volatile u8 canexbuf_interrupt[8];
+volatile u8 canexbuf_interrupt[CANFD_MAX_DATA_LEN];
 
 u8 CANFD_Receive_Msg(u8 *buf);
 void CAN_SoftFilterInit(CAN_FilterInitTypeDef* CAN_FilterInitStruct);
@@ -124,11 +125,15 @@ void USB_LP_CAN1_RX0_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fa
 
 void USB_LP_CAN1_RX0_IRQHandler()
 {
-    uint8_t px,pbuf[8];
+    uint8_t px,pbuf[CANFD_MAX_DATA_LEN];
     if (CAN_GetITStatus(CAN1,CAN_IT_FMP0))
     {
         px = CANFD_Receive_Msg(pbuf);
-        for (int i = 0; i < px; i++) 
+        if(px > CANFD_MAX_DATA_LEN)
+        {
+            px = CANFD_MAX_DATA_LEN;
+        }
+        for (int i = 0; i < px; i++)
         {
             canexbuf_interrupt[i] = pbuf[i];
         }
@@ -153,7 +158,7 @@ void USB_LP_CAN1_RX0_IRQHandler()
  */
 void CAN_SoftFilterInit(CAN_FilterInitTypeDef* CAN_FilterInitStruct)
 {
-    if(CAN_FilterInitStruct->CAN_FilterNumber > sizeof(CANFilterStruct) / sizeof(*CANFilterStruct)){
+    if(CAN_FilterInitStruct->CAN_FilterNumber >= sizeof(CANFilterStruct) / sizeof(*CANFilterStruct)){
         return;
     }
     if(CAN_FilterInitStruct->CAN_FilterActivation)
